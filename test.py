@@ -54,8 +54,8 @@ def main():
 
     print("按 q 退出")
 
-    DEPTH_MIN_MM = 600
-    DEPTH_MAX_MM = 1600
+    DEPTH_MIN_MM = 300
+    DEPTH_MAX_MM = 3000
 
     try:
         while True:
