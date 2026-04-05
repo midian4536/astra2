@@ -13,8 +13,6 @@ valid_point_count = 0
 A1 = None
 A2 = None
 A3 = None
-A4 = None
-A5 = None
 transform_matrix = None
 B1 = None
 B2 = None
@@ -22,6 +20,82 @@ B3 = None
 B4 = None
 new_point_count = 0
 OUTPUT_DIR = r"C:\Users\zzx\Desktop\UR5e-Puncture-Control\astra2\chauncimoti"
+latest_color_bgr = None
+fitted_center = None
+fitted_contour = None
+COLOR_TOLERANCE = 10
+MIN_CONTOUR_AREA = 10
+CHANNEL_MODE = "B"
+CHANNEL_MAP = {"B": 0, "G": 1, "R": 2, "ALL": -1}
+
+
+def region_growing(image, seed_x, seed_y, tolerance=COLOR_TOLERANCE, channel_mode=CHANNEL_MODE):
+    if image is None:
+        return None, None
+    
+    h, w = image.shape[:2]
+    if seed_y >= h or seed_x >= w:
+        return None, None
+    
+    channel_idx = CHANNEL_MAP.get(channel_mode, 0)
+    
+    if channel_idx >= 0:
+        seed_value = float(image[seed_y, seed_x, channel_idx])
+    else:
+        seed_value = image[seed_y, seed_x].astype(np.float32)
+    
+    mask = np.zeros((h, w), dtype=np.uint8)
+    visited = np.zeros((h, w), dtype=bool)
+    
+    queue = [(seed_x, seed_y, seed_value)]
+    visited[seed_y, seed_x] = True
+    
+    directions = [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1), (1, -1), (1, 1)]
+    
+    while queue:
+        x, y, seed_val = queue.pop(0)
+        
+        if channel_idx >= 0:
+            current_value = float(image[y, x, channel_idx])
+            diff = abs(current_value - seed_val)
+        else:
+            current_value = image[y, x].astype(np.float32)
+            diff = np.sqrt(np.sum((current_value - seed_val) ** 2))
+        
+        if diff <= tolerance:
+            mask[y, x] = 255
+            new_seed = current_value
+            
+            for dx, dy in directions:
+                nx, ny = x + dx, y + dy
+                if 0 <= nx < w and 0 <= ny < h and not visited[ny, nx]:
+                    visited[ny, nx] = True
+                    queue.append((nx, ny, new_seed))
+    
+    return mask, image[seed_y, seed_x]
+
+
+def get_mask_center(mask, min_area=MIN_CONTOUR_AREA):
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    if not contours:
+        return None, None
+    
+    valid_contours = [c for c in contours if cv2.contourArea(c) >= min_area]
+    
+    if not valid_contours:
+        return None, None
+    
+    largest_contour = max(valid_contours, key=cv2.contourArea)
+    
+    M = cv2.moments(largest_contour)
+    if M["m00"] == 0:
+        return None, None
+    
+    cx = int(M["m10"] / M["m00"])
+    cy = int(M["m01"] / M["m00"])
+    
+    return (cx, cy), largest_contour
 
 
 def create_colorbar(height, bar_width, vmin_mm, vmax_mm, cmap=cv2.COLORMAP_JET):
@@ -132,6 +206,7 @@ def calibrate_coordinates(x_meas, y_meas, z_meas):
 
 def on_mouse(event, x, y, flags, param):
     global clicked_point, latest_depth_mm, proj_intrinsic, has_output
+    global latest_color_bgr, fitted_center, fitted_contour, CHANNEL_MODE
 
     if event != cv2.EVENT_LBUTTONDOWN:
         return
@@ -144,7 +219,32 @@ def on_mouse(event, x, y, flags, param):
 
     clicked_point = (x, y)
     has_output = False
-    print(f"\n点击位置: ({x}, {y})，开始测量...")
+    fitted_center = None
+    fitted_contour = None
+    
+    print(f"\n点击位置: ({x}, {y})，当前通道: {CHANNEL_MODE}，开始分割...")
+
+    if latest_color_bgr is None:
+        print("当前没有可用的RGB图像")
+        return
+
+    mask, click_color = region_growing(latest_color_bgr, x, y, channel_mode=CHANNEL_MODE)
+    print(f"Mask像素数: {np.count_nonzero(mask)}")
+    if mask is None:
+        print("颜色分割失败")
+        return
+    
+    print(f"点击位置颜色 (BGR): {click_color}")
+
+    center, contour = get_mask_center(mask)
+    if center is None:
+        print("未找到有效的区域")
+        return
+    
+    fitted_center = center
+    fitted_contour = contour
+    
+    print(f"质心坐标: ({center[0]}, {center[1]})")
 
     if latest_depth_mm is None:
         print("当前没有可用深度数据")
@@ -155,23 +255,25 @@ def on_mouse(event, x, y, flags, param):
         return
 
     h, w = latest_depth_mm.shape
-    if x >= w or y >= h:
-        print(f"点击坐标越界: ({x}, {y})")
+    cx, cy = center
+    if cx >= w or cy >= h:
+        print(f"质心坐标越界: ({cx}, {cy})")
         return
 
-    z_mm = latest_depth_mm[y, x]
+    z_mm = latest_depth_mm[cy, cx]
     if z_mm <= 0:
-        print(f"RGB点 ({x}, {y}) 对应深度无效")
+        print(f"质心 ({cx}, {cy}) 对应深度无效")
         return
 
-    X, Y, Z = pixel_to_3d(x, y, z_mm, proj_intrinsic)
+    X, Y, Z = pixel_to_3d(cx, cy, z_mm, proj_intrinsic)
     print(
-        f"像素 ({x}, {y}) -> 3D: X={X:.1f} mm, Y={Y:.1f} mm, Z={Z:.1f} mm"
+        f"质心像素 ({cx}, {cy}) -> 3D: X={X:.1f} mm, Y={Y:.1f} mm, Z={Z:.1f} mm"
     )
 
 
 def main():
-    global latest_depth_mm, clicked_point, proj_intrinsic, rgb_saved, has_output, valid_point_count, A1, A2, A3, A4, A5, transform_matrix, B1, B2, B3, B4, new_point_count
+    global latest_depth_mm, clicked_point, proj_intrinsic, rgb_saved, has_output, valid_point_count, A1, A2, A3, transform_matrix, B1, B2, B3, B4, new_point_count
+    global latest_color_bgr, fitted_center, fitted_contour, CHANNEL_MODE
 
     pipeline = Pipeline()
     config = Config()
@@ -256,6 +358,7 @@ def main():
     )
 
     print("按 q 退出")
+    print("按 1/2/3/4 切换通道: 1=B(默认), 2=G, 3=R, 4=ALL(全部BGR)")
     print("左键点击左侧RGB图，输出该点三维坐标")
 
     try:
@@ -321,6 +424,8 @@ def main():
                     cv2.LINE_AA,
                 )
             
+            latest_color_bgr = color_bgr.copy()
+            
             if not rgb_saved and color_bgr is not None:
                 if not os.path.exists(SAVE_DIR):
                     os.makedirs(SAVE_DIR)
@@ -329,21 +434,29 @@ def main():
                 print(f"RGB图像已保存到: {save_path}")
                 rgb_saved = True
 
-            if clicked_point is not None:
+            if clicked_point is not None and fitted_center is not None:
                 cx, cy = clicked_point
-                if 0 <= cx < WIDTH and 0 <= cy < HEIGHT:
-                    cv2.circle(color_bgr, (cx, cy), 2, (0, 0, 255), -1)
-                    cv2.circle(depth_vis, (cx, cy), 5, (255, 255, 255), -1)
+                fx, fy = fitted_center
+                
+                if 0 <= fx < WIDTH and 0 <= fy < HEIGHT:
+                    cv2.circle(color_bgr, (cx, cy), 3, (255, 0, 0), -1)
+                    cv2.circle(color_bgr, (fx, fy), 5, (0, 255, 0), -1)
+                    cv2.line(color_bgr, (cx, cy), (fx, fy), (0, 255, 255), 1)
+                    
+                    if fitted_contour is not None:
+                        cv2.drawContours(color_bgr, [fitted_contour], -1, (255, 255, 0), 2)
+                    
+                    cv2.circle(depth_vis, (fx, fy), 5, (255, 255, 255), -1)
 
                     if latest_depth_mm is not None and proj_intrinsic is not None:
-                        if cy < latest_depth_mm.shape[0] and cx < latest_depth_mm.shape[1]:
-                            z_mm = latest_depth_mm[cy, cx]
+                        if fy < latest_depth_mm.shape[0] and fx < latest_depth_mm.shape[1]:
+                            z_mm = latest_depth_mm[fy, fx]
                             if z_mm > 0:
-                                X, Y, Z = pixel_to_3d(cx, cy, z_mm, proj_intrinsic)
+                                X, Y, Z = pixel_to_3d(fx, fy, z_mm, proj_intrinsic)
                                 X_cal, Y_cal, Z_cal = calibrate_coordinates(X, Y, Z)
                                 if not has_output:
-                                    if valid_point_count < 5:
-                                        print(f"像素 ({cx}, {cy})")
+                                    if valid_point_count < 3:
+                                        print(f"质心像素 ({fx}, {fy})")
                                         print(f"  测量值: X={X:.2f} mm, Y={Y:.2f} mm, Z={Z:.2f} mm")
                                         print(f"  校准值: X={X_cal:.2f} mm, Y={Y_cal:.2f} mm, Z={Z_cal:.2f} mm")
                                         print("-" * 50)
@@ -356,21 +469,15 @@ def main():
                                         elif valid_point_count == 2:
                                             A3 = (X_cal, Y_cal, Z_cal)
                                             print(f"已存储到 A3")
-                                        elif valid_point_count == 3:
-                                            A4 = (X_cal, Y_cal, Z_cal)
-                                            print(f"已存储到 A4")
-                                        elif valid_point_count == 4:
-                                            A5 = (X_cal, Y_cal, Z_cal)
-                                            print(f"已存储到 A5")
-                                            print(f"已采集满5个点，正在计算变换矩阵...")
+                                            print(f"已采集满3个点，正在计算变换矩阵...")
                                         valid_point_count += 1
-                                        print(f"当前已采集 {valid_point_count}/5 个有效点")
-                                        if valid_point_count == 5:
+                                        print(f"当前已采集 {valid_point_count}/3 个有效点")
+                                        if valid_point_count == 3:
                                             transform_matrix = compute_transform_matrix()
                                     elif new_point_count < 4:
                                         P_old = np.array([X_cal, Y_cal, Z_cal, 1.0])
                                         P_new = transform_matrix @ P_old
-                                        print(f"\n像素 ({cx}, {cy})")
+                                        print(f"\n质心像素 ({fx}, {fy})")
                                         print(f"  原坐标系: X={X_cal:.2f} mm, Y={Y_cal:.2f} mm, Z={Z_cal:.2f} mm")
                                         print(f"  新坐标系: X={P_new[0]:.2f} mm, Y={P_new[1]:.2f} mm, Z={P_new[2]:.2f} mm")
                                         print("-" * 50)
@@ -393,14 +500,14 @@ def main():
                                     else:
                                         P_old = np.array([X_cal, Y_cal, Z_cal, 1.0])
                                         P_new = transform_matrix @ P_old
-                                        print(f"\n像素 ({cx}, {cy})")
+                                        print(f"\n质心像素 ({fx}, {fy})")
                                         print(f"  原坐标系: X={X_cal:.2f} mm, Y={Y_cal:.2f} mm, Z={Z_cal:.2f} mm")
                                         print(f"  新坐标系: X={P_new[0]:.2f} mm, Y={P_new[1]:.2f} mm, Z={P_new[2]:.2f} mm")
                                         print("-" * 50)
                                     has_output = True
                             else:
                                 if not has_output:
-                                    print(f"像素 ({cx}, {cy}) 深度无效，等待有效深度...")
+                                    print(f"质心 ({fx}, {fy}) 深度无效，等待有效深度...")
 
             depth_display = np.hstack((depth_vis, colorbar))
             combined = np.hstack((color_bgr, depth_display))
@@ -410,6 +517,18 @@ def main():
             key = cv2.waitKey(1) & 0xFF
             if key == ord("q"):
                 break
+            elif key == ord("1"):
+                CHANNEL_MODE = "B"
+                print(f"切换到 B 通道模式")
+            elif key == ord("2"):
+                CHANNEL_MODE = "G"
+                print(f"切换到 G 通道模式")
+            elif key == ord("3"):
+                CHANNEL_MODE = "R"
+                print(f"切换到 R 通道模式")
+            elif key == ord("4"):
+                CHANNEL_MODE = "ALL"
+                print(f"切换到 ALL 通道模式（使用全部BGR通道）")
 
     finally:
         pipeline.stop()
@@ -417,13 +536,11 @@ def main():
 
 
 def compute_transform_matrix():
-    global A1, A2, A3, A4, A5
+    global A1, A2, A3
 
     P1 = np.array(A1)
     P2 = np.array(A2)
     P3 = np.array(A3)
-    P4 = np.array(A4)
-    P5 = np.array(A5)
 
     mid_point = (P1 + P2) / 2.0
     print(f"\nA1-A2中点: ({mid_point[0]:.2f}, {mid_point[1]:.2f}, {mid_point[2]:.2f})")
@@ -434,8 +551,8 @@ def compute_transform_matrix():
     y_axis = vec_A1_A2 / np.linalg.norm(vec_A1_A2)
     print(f"Y轴方向(单位向量): ({y_axis[0]:.6f}, {y_axis[1]:.6f}, {y_axis[2]:.6f})")
 
-    v1 = P4 - P3
-    v2 = P5 - P3
+    v1 = P1 - P3
+    v2 = P2 - P3
     x_axis = np.cross(v1, v2)
     x_axis = x_axis / np.linalg.norm(x_axis)
     if x_axis[2] > 0:
