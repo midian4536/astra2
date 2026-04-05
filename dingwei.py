@@ -8,10 +8,20 @@ rgb_saved = False
 SAVE_DIR = r"C:\Users\zzx\Desktop\mechanical arm\astra2\picture"
 latest_depth_mm = None
 proj_intrinsic = None
-frame_count = 0
-output_count = 0
-MAX_OUTPUTS = 3
-OUTPUT_INTERVAL = 20
+has_output = False
+valid_point_count = 0
+A1 = None
+A2 = None
+A3 = None
+A4 = None
+A5 = None
+transform_matrix = None
+B1 = None
+B2 = None
+B3 = None
+B4 = None
+new_point_count = 0
+OUTPUT_DIR = r"C:\Users\zzx\Desktop\UR5e-Puncture-Control\astra2\chauncimoti"
 
 
 def create_colorbar(height, bar_width, vmin_mm, vmax_mm, cmap=cv2.COLORMAP_JET):
@@ -121,7 +131,7 @@ def calibrate_coordinates(x_meas, y_meas, z_meas):
 
 
 def on_mouse(event, x, y, flags, param):
-    global clicked_point, latest_depth_mm, proj_intrinsic, frame_count, output_count
+    global clicked_point, latest_depth_mm, proj_intrinsic, has_output
 
     if event != cv2.EVENT_LBUTTONDOWN:
         return
@@ -133,8 +143,7 @@ def on_mouse(event, x, y, flags, param):
         return
 
     clicked_point = (x, y)
-    frame_count = 0
-    output_count = 0
+    has_output = False
     print(f"\n点击位置: ({x}, {y})，开始测量...")
 
     if latest_depth_mm is None:
@@ -162,7 +171,7 @@ def on_mouse(event, x, y, flags, param):
 
 
 def main():
-    global latest_depth_mm, clicked_point, proj_intrinsic, frame_count, output_count, rgb_saved
+    global latest_depth_mm, clicked_point, proj_intrinsic, rgb_saved, has_output, valid_point_count, A1, A2, A3, A4, A5, transform_matrix, B1, B2, B3, B4, new_point_count
 
     pipeline = Pipeline()
     config = Config()
@@ -332,58 +341,71 @@ def main():
                             if z_mm > 0:
                                 X, Y, Z = pixel_to_3d(cx, cy, z_mm, proj_intrinsic)
                                 X_cal, Y_cal, Z_cal = calibrate_coordinates(X, Y, Z)
-                                text = f"Meas: X={X:.1f} Y={Y:.1f} Z={Z:.1f}"
-                                text_cal = f"Calib: X={X_cal:.1f} Y={Y_cal:.1f} Z={Z_cal:.1f}"
+                                if not has_output:
+                                    if valid_point_count < 5:
+                                        print(f"像素 ({cx}, {cy})")
+                                        print(f"  测量值: X={X:.2f} mm, Y={Y:.2f} mm, Z={Z:.2f} mm")
+                                        print(f"  校准值: X={X_cal:.2f} mm, Y={Y_cal:.2f} mm, Z={Z_cal:.2f} mm")
+                                        print("-" * 50)
+                                        if valid_point_count == 0:
+                                            A1 = (X_cal, Y_cal, Z_cal)
+                                            print(f"已存储到 A1")
+                                        elif valid_point_count == 1:
+                                            A2 = (X_cal, Y_cal, Z_cal)
+                                            print(f"已存储到 A2")
+                                        elif valid_point_count == 2:
+                                            A3 = (X_cal, Y_cal, Z_cal)
+                                            print(f"已存储到 A3")
+                                        elif valid_point_count == 3:
+                                            A4 = (X_cal, Y_cal, Z_cal)
+                                            print(f"已存储到 A4")
+                                        elif valid_point_count == 4:
+                                            A5 = (X_cal, Y_cal, Z_cal)
+                                            print(f"已存储到 A5")
+                                            print(f"已采集满5个点，正在计算变换矩阵...")
+                                        valid_point_count += 1
+                                        print(f"当前已采集 {valid_point_count}/5 个有效点")
+                                        if valid_point_count == 5:
+                                            transform_matrix = compute_transform_matrix()
+                                    elif new_point_count < 4:
+                                        P_old = np.array([X_cal, Y_cal, Z_cal, 1.0])
+                                        P_new = transform_matrix @ P_old
+                                        print(f"\n像素 ({cx}, {cy})")
+                                        print(f"  原坐标系: X={X_cal:.2f} mm, Y={Y_cal:.2f} mm, Z={Z_cal:.2f} mm")
+                                        print(f"  新坐标系: X={P_new[0]:.2f} mm, Y={P_new[1]:.2f} mm, Z={P_new[2]:.2f} mm")
+                                        print("-" * 50)
+                                        if new_point_count == 0:
+                                            B1 = (P_new[0], P_new[1], P_new[2])
+                                            print(f"已存储到 B1")
+                                        elif new_point_count == 1:
+                                            B2 = (P_new[0], P_new[1], P_new[2])
+                                            print(f"已存储到 B2")
+                                        elif new_point_count == 2:
+                                            B3 = (P_new[0], P_new[1], P_new[2])
+                                            print(f"已存储到 B3")
+                                        elif new_point_count == 3:
+                                            B4 = (P_new[0], P_new[1], P_new[2])
+                                            print(f"已存储到 B4")
+                                            print(f"已采集满4个新坐标点，正在保存到文件...")
+                                            save_points_to_file()
+                                        new_point_count += 1
+                                        print(f"当前已采集 {new_point_count}/4 个新坐标点")
+                                    else:
+                                        P_old = np.array([X_cal, Y_cal, Z_cal, 1.0])
+                                        P_new = transform_matrix @ P_old
+                                        print(f"\n像素 ({cx}, {cy})")
+                                        print(f"  原坐标系: X={X_cal:.2f} mm, Y={Y_cal:.2f} mm, Z={Z_cal:.2f} mm")
+                                        print(f"  新坐标系: X={P_new[0]:.2f} mm, Y={P_new[1]:.2f} mm, Z={P_new[2]:.2f} mm")
+                                        print("-" * 50)
+                                    has_output = True
                             else:
-                                text = f"({cx},{cy}) invalid"
-                                text_cal = ""
-                            
-                            cv2.putText(
-                                color_bgr,
-                                text,
-                                (min(cx + 10, WIDTH - 360), max(cy - 10, 25)),
-                                cv2.FONT_HERSHEY_SIMPLEX,
-                                0.55,
-                                (0, 0, 255),
-                                2,
-                                cv2.LINE_AA,
-                            )
-                            
-                            if text_cal:
-                                cv2.putText(
-                                    color_bgr,
-                                    text_cal,
-                                    (min(cx + 10, WIDTH - 360), max(cy + 15, 45)),
-                                    cv2.FONT_HERSHEY_SIMPLEX,
-                                    0.55,
-                                    (0, 255, 0),
-                                    2,
-                                    cv2.LINE_AA,
-                                )
+                                if not has_output:
+                                    print(f"像素 ({cx}, {cy}) 深度无效，等待有效深度...")
 
             depth_display = np.hstack((depth_vis, colorbar))
             combined = np.hstack((color_bgr, depth_display))
 
             cv2.imshow(window_name, combined)
-
-            frame_count += 1
-            
-            if clicked_point is not None and output_count < MAX_OUTPUTS and frame_count % OUTPUT_INTERVAL == 0:
-                cx, cy = clicked_point
-                if latest_depth_mm is not None and proj_intrinsic is not None:
-                    if cy < latest_depth_mm.shape[0] and cx < latest_depth_mm.shape[1]:
-                        z_mm = latest_depth_mm[cy, cx]
-                        if z_mm > 0:
-                            X, Y, Z = pixel_to_3d(cx, cy, z_mm, proj_intrinsic)
-                            X_cal, Y_cal, Z_cal = calibrate_coordinates(X, Y, Z)
-                            output_count += 1
-                            print(f"[{output_count}/{MAX_OUTPUTS}] 像素 ({cx}, {cy})")
-                            print(f"  测量值: X={X:.2f} mm, Y={Y:.2f} mm, Z={Z:.2f} mm")
-                            print(f"  校准值: X={X_cal:.2f} mm, Y={Y_cal:.2f} mm, Z={Z_cal:.2f} mm")
-                            print("-" * 50)
-                            
-                            if output_count >= MAX_OUTPUTS:
-                                print(f"已完成 {MAX_OUTPUTS} 次输出，请点击新的位置继续测量")
 
             key = cv2.waitKey(1) & 0xFF
             if key == ord("q"):
@@ -392,6 +414,85 @@ def main():
     finally:
         pipeline.stop()
         cv2.destroyAllWindows()
+
+
+def compute_transform_matrix():
+    global A1, A2, A3, A4, A5
+
+    P1 = np.array(A1)
+    P2 = np.array(A2)
+    P3 = np.array(A3)
+    P4 = np.array(A4)
+    P5 = np.array(A5)
+
+    mid_point = (P1 + P2) / 2.0
+    print(f"\nA1-A2中点: ({mid_point[0]:.2f}, {mid_point[1]:.2f}, {mid_point[2]:.2f})")
+
+    vec_A1_A2 = P2 - P1
+    print(f"A1到A2的向量: ({vec_A1_A2[0]:.2f}, {vec_A1_A2[1]:.2f}, {vec_A1_A2[2]:.2f})")
+
+    y_axis = vec_A1_A2 / np.linalg.norm(vec_A1_A2)
+    print(f"Y轴方向(单位向量): ({y_axis[0]:.6f}, {y_axis[1]:.6f}, {y_axis[2]:.6f})")
+
+    v1 = P4 - P3
+    v2 = P5 - P3
+    z_axis = np.cross(v1, v2)
+    z_axis = z_axis / np.linalg.norm(z_axis)
+    if z_axis[1] > 0:
+        z_axis = -z_axis
+    print(f"x-y平面法向量(Z轴): ({z_axis[0]:.6f}, {z_axis[1]:.6f}, {z_axis[2]:.6f})")
+
+    x_axis = np.cross(y_axis, z_axis)
+    x_axis = x_axis / np.linalg.norm(x_axis)
+    print(f"X轴方向(单位向量): ({x_axis[0]:.6f}, {x_axis[1]:.6f}, {x_axis[2]:.6f})")
+
+    new_origin = mid_point - 300.0 * x_axis
+    print(f"新坐标系原点: ({new_origin[0]:.2f}, {new_origin[1]:.2f}, {new_origin[2]:.2f})")
+
+    R = np.array([x_axis, y_axis, z_axis])
+    t = -R @ new_origin
+
+    T = np.eye(4)
+    T[0:3, 0:3] = R
+    T[0:3, 3] = t
+
+    print("\n" + "=" * 60)
+    print("从原坐标系到新坐标系的变换矩阵 T (4x4):")
+    print("=" * 60)
+    print(f"[{T[0,0]:10.6f}, {T[0,1]:10.6f}, {T[0,2]:10.6f}, {T[0,3]:10.2f}]")
+    print(f"[{T[1,0]:10.6f}, {T[1,1]:10.6f}, {T[1,2]:10.6f}, {T[1,3]:10.2f}]")
+    print(f"[{T[2,0]:10.6f}, {T[2,1]:10.6f}, {T[2,2]:10.6f}, {T[2,3]:10.2f}]")
+    print(f"[{T[3,0]:10.6f}, {T[3,1]:10.6f}, {T[3,2]:10.6f}, {T[3,3]:10.2f}]")
+    print("=" * 60)
+
+    print("\n变换矩阵含义:")
+    print("  原坐标系中的点 P_old 变换到新坐标系: P_new = T @ [P_old, 1]^T")
+    print("  或使用齐次坐标: [x_new, y_new, z_new, 1]^T = T @ [x_old, y_old, z_old, 1]^T")
+    print("\n请继续点击4个点，将输出新坐标系下的坐标并保存到文件")
+
+    return T
+
+
+def save_points_to_file():
+    global B1, B2, B3, B4, OUTPUT_DIR
+
+    if not os.path.exists(OUTPUT_DIR):
+        os.makedirs(OUTPUT_DIR)
+
+    file_path = os.path.join(OUTPUT_DIR, "1.csv")
+
+    with open(file_path, "w", encoding="utf-8") as f:
+        f.write(",x(mm),y(mm),z(mm)\n")
+        f.write(f"B1,{B1[0]:.2f},{B1[1]:.2f},{B1[2]:.2f}\n")
+        f.write(f"B2,{B2[0]:.2f},{B2[1]:.2f},{B2[2]:.2f}\n")
+        f.write(f"B3,{B3[0]:.2f},{B3[1]:.2f},{B3[2]:.2f}\n")
+        f.write(f"B4,{B4[0]:.2f},{B4[1]:.2f},{B4[2]:.2f}\n")
+
+    print(f"\n4个新坐标点已保存到: {file_path}")
+    print(f"B1: ({B1[0]:.2f}, {B1[1]:.2f}, {B1[2]:.2f}) mm")
+    print(f"B2: ({B2[0]:.2f}, {B2[1]:.2f}, {B2[2]:.2f}) mm")
+    print(f"B3: ({B3[0]:.2f}, {B3[1]:.2f}, {B3[2]:.2f}) mm")
+    print(f"B4: ({B4[0]:.2f}, {B4[1]:.2f}, {B4[2]:.2f}) mm")
 
 
 if __name__ == "__main__":
